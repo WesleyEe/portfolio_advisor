@@ -1,0 +1,10 @@
+# Environment
+.env
+.venv/
+
+# Personal holdings data
+data/holdings_*.json
+
+# Python
+__pycache__/
+*.pyc

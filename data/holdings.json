@@ -1,0 +1,10 @@
+{
+  "portfolio_name": "My Portfolio",
+  "currency": "USD",
+  "holdings": [
+    { "ticker": "AAPL", "shares": 10.0, "avg_cost": 150.00, "sector": "Technology" },
+    { "ticker": "MSFT", "shares": 5.0,  "avg_cost": 300.00, "sector": "Technology" },
+    { "ticker": "VOO",  "shares": 8.0,  "avg_cost": 400.00, "sector": "ETF" }
+  ],
+  "cash_usd": 1000
+}
