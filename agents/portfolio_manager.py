@@ -122,6 +122,13 @@ def run(market_data: dict, research: dict, risk_metrics: dict, portfolio_meta: d
                 text = text[4:]
 
         recommendation = json.loads(text)
+        seen: set = set()
+        deduped = []
+        for h in recommendation.get("holdings", []):
+            if h.get("ticker") not in seen:
+                seen.add(h.get("ticker"))
+                deduped.append(h)
+        recommendation["holdings"] = deduped
         recommendation["total_portfolio_value_usd"] = context["total_portfolio_value_usd"]
         return recommendation
 
