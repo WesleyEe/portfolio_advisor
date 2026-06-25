@@ -5,11 +5,8 @@ structured investment recommendation for each holding.
 """
 
 import json
-import os
-from google import genai
-from google.genai import types
 
-client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+from llm import server as llm
 
 SYSTEM_PROMPT = """You are an experienced portfolio manager conducting a thorough review of a retail investor's equity portfolio.
 
@@ -56,11 +53,9 @@ Return ONLY valid JSON matching this schema exactly — no prose, no markdown.
 
 
 def run(market_data: dict, research: dict, risk_metrics: dict, portfolio_meta: dict) -> dict:
-    """
-    Orchestrate the final analysis. Returns structured recommendation dict.
-    """
+    """Orchestrate the final analysis. Returns structured recommendation dict."""
 
-    context = {
+    context: dict = {
         "portfolio_name": portfolio_meta.get("portfolio_name", "Portfolio"),
         "cash_usd": portfolio_meta.get("cash_usd", 0),
         "holdings_data": [],
@@ -73,7 +68,7 @@ def run(market_data: dict, research: dict, risk_metrics: dict, portfolio_meta: d
             continue
         total_value += mkt.get("position_value", 0) or 0
 
-        holding_ctx = {
+        holding_ctx: dict = {
             "ticker": ticker,
             "company": mkt.get("company_name", ticker),
             "sector": mkt.get("sector"),
@@ -113,17 +108,14 @@ def run(market_data: dict, research: dict, risk_metrics: dict, portfolio_meta: d
     context["total_portfolio_value_usd"] = round(total_value, 2)
 
     try:
-        response = client.models.generate_content(
-            model="gemini-3.1-flash-lite",
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
-                max_output_tokens=4000,
-            ),
-            contents="Please analyze this portfolio and return your structured recommendation:\n\n"
-                     + json.dumps(context, indent=2),
+        text = llm.generate(
+            prompt="Please analyze this portfolio and return your structured recommendation:\n\n"
+                   + json.dumps(context, indent=2),
+            system=SYSTEM_PROMPT,
+            max_tokens=4000,
         )
 
-        text = response.text.strip()
+        text = text.strip()
         if text.startswith("```"):
             text = text.split("```")[1]
             if text.startswith("json"):

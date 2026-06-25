@@ -1,27 +1,27 @@
 """
 News + Analyst Agent
-Uses Gemini with Google Search grounding to gather recent news and analyst opinions per ticker.
+Searches DuckDuckGo for recent news and analyst views per ticker, then
+uses the local LLM to distil results into structured JSON.
 Runs concurrently across all holdings.
 """
 
 import json
-import os
+import time
 from concurrent.futures import ThreadPoolExecutor
-from google import genai
-from google.genai import types
 
-client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+from ddgs import DDGS
+
+from llm import server as llm
 
 NEWS_SYSTEM = """You are a financial news research assistant.
-Your job: search the web for the most recent and relevant news about a given stock ticker,
-then return a concise JSON summary.
+Given a set of raw web search snippets about a stock, produce a concise JSON summary.
 
 Return ONLY valid JSON, no prose, no markdown fences. Schema:
 {
   "ticker": "AAPL",
   "company": "Apple Inc.",
   "news_summary": "2-3 sentence summary of key recent developments",
-  "sentiment": "bullish" | "bearish" | "neutral" | "mixed",
+  "sentiment": "bullish or bearish or neutral or mixed",
   "key_events": ["event 1", "event 2"],
   "risks": ["risk 1"],
   "catalysts": ["catalyst 1"],
@@ -29,12 +29,12 @@ Return ONLY valid JSON, no prose, no markdown fences. Schema:
 }"""
 
 ANALYST_SYSTEM = """You are a sell-side analyst research assistant.
-Your job: search the web for the latest analyst ratings, price targets, and commentary for a stock.
+Given a set of raw web search snippets about analyst ratings for a stock, produce a concise JSON summary.
 
 Return ONLY valid JSON, no prose, no markdown fences. Schema:
 {
   "ticker": "AAPL",
-  "consensus_rating": "Buy" | "Overweight" | "Hold" | "Underweight" | "Sell" | "Unknown",
+  "consensus_rating": "Buy or Overweight or Hold or Underweight or Sell or Unknown",
   "price_target_range": "e.g. $180-$220",
   "recent_rating_changes": ["e.g. Goldman upgraded to Buy on Jan 5"],
   "bull_case": "1-2 sentence bull thesis from analysts",
@@ -43,46 +43,59 @@ Return ONLY valid JSON, no prose, no markdown fences. Schema:
 }"""
 
 
-def _search_with_gemini(ticker: str, system_prompt: str, user_query: str) -> dict:
-    """Run a single Gemini call with Google Search grounding enabled."""
+def _ddg_search(query: str, max_results: int = 6) -> list[dict]:
+    """Return DuckDuckGo text results, retrying once on rate-limit."""
+    for attempt in range(2):
+        try:
+            with DDGS() as ddgs:
+                return list(ddgs.text(query, max_results=max_results))
+        except Exception:
+            if attempt == 0:
+                time.sleep(2)
+    return []
+
+
+def _snippets_text(results: list[dict]) -> str:
+    lines = []
+    for r in results:
+        title = r.get("title", "")
+        body = r.get("body", "")
+        lines.append(f"- {title}: {body}")
+    return "\n".join(lines) or "No search results found."
+
+
+def get_news(ticker: str, company_name: str) -> dict:
+    query = f"{company_name} {ticker} stock news earnings last 7 days"
+    results = _ddg_search(query)
+    snippets = _snippets_text(results)
+
+    prompt = (
+        f"Ticker: {ticker}\nCompany: {company_name}\n\n"
+        f"Recent web search snippets:\n{snippets}\n\n"
+        "Summarise the above into the required JSON schema."
+    )
     try:
-        response = client.models.generate_content(
-            model="gemini-3.1-flash-lite",
-            config=types.GenerateContentConfig(
-                system_instruction=system_prompt,
-                max_output_tokens=1000,
-                tools=[types.Tool(google_search=types.GoogleSearch())],
-            ),
-            contents=user_query,
-        )
-
-        text = response.text.strip()
-        if text.startswith("```"):
-            text = text.split("```")[1]
-            if text.startswith("json"):
-                text = text[4:]
-
+        text = llm.generate(prompt=prompt, system=NEWS_SYSTEM, max_tokens=600)
         return json.loads(text)
     except Exception as e:
         return {"ticker": ticker, "error": str(e)}
 
 
-def get_news(ticker: str, company_name: str) -> dict:
-    query = (
-        f"Search for the latest news about {company_name} ({ticker}) stock "
-        f"from the past 7 days. Include earnings, product launches, management changes, "
-        f"regulatory news, and any major price movements."
-    )
-    return _search_with_gemini(ticker, NEWS_SYSTEM, query)
-
-
 def get_analyst_views(ticker: str, company_name: str) -> dict:
-    query = (
-        f"Search for the most recent analyst ratings, price targets, and investment commentary "
-        f"for {company_name} ({ticker}). Look for upgrades, downgrades, and target price changes "
-        f"in the last 30 days."
+    query = f"{company_name} {ticker} analyst rating price target upgrade downgrade 2025"
+    results = _ddg_search(query)
+    snippets = _snippets_text(results)
+
+    prompt = (
+        f"Ticker: {ticker}\nCompany: {company_name}\n\n"
+        f"Recent web search snippets:\n{snippets}\n\n"
+        "Summarise the analyst views into the required JSON schema."
     )
-    return _search_with_gemini(ticker, ANALYST_SYSTEM, query)
+    try:
+        text = llm.generate(prompt=prompt, system=ANALYST_SYSTEM, max_tokens=600)
+        return json.loads(text)
+    except Exception as e:
+        return {"ticker": ticker, "error": str(e)}
 
 
 def run(market_data: dict) -> dict:
@@ -90,7 +103,7 @@ def run(market_data: dict) -> dict:
     Run news + analyst research concurrently for all tickers.
     Returns { ticker: { "news": {...}, "analyst": {...} } }
     """
-    results = {}
+    results: dict = {}
     tasks = []
 
     with ThreadPoolExecutor(max_workers=4) as executor:
@@ -109,7 +122,7 @@ def run(market_data: dict) -> dict:
                 results[ticker] = {}
 
             try:
-                result = future.result(timeout=60)
+                result = future.result(timeout=90)
                 if is_analyst:
                     results[ticker]["analyst"] = result
                 else:

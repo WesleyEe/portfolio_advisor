@@ -19,6 +19,7 @@ from pathlib import Path
 # Ensure project root is on path when run directly
 sys.path.insert(0, str(Path(__file__).parent))
 
+from llm import server as llm_server
 from agents import market_agent, news_analyst_agent, portfolio_manager
 from tools import report
 
@@ -45,6 +46,13 @@ def main():
     if not holdings_path.exists():
         print(f"✗  Holdings file not found: {holdings_path}")
         sys.exit(1)
+
+    # ── 0. Start local LLM ────────────────────────────────────────────────────
+    model = llm_server.model_name()
+    print(f"\n🤖  Starting local LLM ({model}) …")
+    llm_server.start()
+    llm_server.ensure_model(model)
+    print(f"   ✓  Ollama ready  (override model: OLLAMA_MODEL=<name>)")
 
     portfolio = load_holdings(holdings_path)
     holdings = portfolio["holdings"]

@@ -5,6 +5,9 @@
 # Personal holdings data
 data/holdings_*.json
 
+# Run output
+portfolio_report.md
+
 # Python
 __pycache__/
 *.pyc

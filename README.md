@@ -1,6 +1,6 @@
 # PortfolioAdvisor
 
-A local multi-agent system that researches your equity holdings and recommends portfolio adjustments using Gemini + live market data.
+A local multi-agent system that researches your equity holdings and recommends portfolio adjustments using a locally hosted LLM + live market data. No API keys required.
 
 ## How it works
 
@@ -10,17 +10,23 @@ Holdings JSON
      ▼
 Market Agent ──────► Live prices, P&L, fundamentals (yfinance)
      │
-News + Analyst Agent ► Web search per ticker (Gemini + Google Search)
+News + Analyst Agent ► DuckDuckGo search per ticker → local LLM analysis
      │
-Portfolio Manager ──► Synthesizes everything into a structured review (Gemini)
+Portfolio Manager ──► Synthesizes everything into a structured review (local LLM)
      │
      ▼
 CLI summary + Markdown report
 ```
 
+The local LLM runs via [Ollama](https://ollama.com) on your machine. The default model is **qwen2.5:3b** (~2 GB RAM, fast on Apple Silicon via Metal GPU offload).
+
 ## Setup
 
-### 1. Install dependencies
+### 1. Install Ollama
+
+Download and install from [ollama.com](https://ollama.com). The app runs as a background daemon — no configuration needed.
+
+### 2. Install Python dependencies
 
 ```bash
 # Create a virtual environment (recommended)
@@ -30,16 +36,6 @@ source .venv/bin/activate
 # Install packages
 pip install -r requirements.txt
 ```
-
-### 2. Set your Gemini API key
-
-Get a free key at [aistudio.google.com](https://aistudio.google.com).
-
-```bash
-export GEMINI_API_KEY="AIza..."
-```
-
-Add this to your `~/.zshrc` or `~/.bashrc` to make it permanent.
 
 ### 3. Edit your holdings
 
@@ -71,7 +67,9 @@ python run.py --holdings my_portfolio.json --output my_report.md
 python run.py --no-research
 ```
 
-A full run with 5 holdings typically takes 45–90 seconds (most of this is the concurrent web searches).
+On first run, Ollama will automatically pull the model (~2 GB, one-time download). Subsequent runs start immediately.
+
+A full run with 5 holdings typically takes 60–120 seconds. Web searches run concurrently across tickers, but local LLM inference is serialized by Ollama (one request at a time).
 
 ## Output
 
@@ -92,7 +90,7 @@ A full run with 5 holdings typically takes 45–90 seconds (most of this is the 
 ## Extending the system
 
 - **Add more tickers:** Edit `data/holdings.json`
-- **Change the model:** Edit `model=` in `agents/portfolio_manager.py` or `agents/news_analyst_agent.py` (e.g. `gemini-2.0-flash`, `gemini-1.5-flash`)
+- **Change the model:** Set the `OLLAMA_MODEL` env var — e.g. `OLLAMA_MODEL=qwen2.5:7b python run.py` for better reasoning, or `OLLAMA_MODEL=qwen2.5:1.5b` for maximum speed
 - **Add a scheduler:** Use `cron` to run `python run.py` every weekday morning
 - **Add email delivery:** Pipe `portfolio_report.md` to `mail` or integrate with a notification script
 - **Add more agents:** Create a new file in `agents/` following the same pattern and call it from `run.py`
