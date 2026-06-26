@@ -22,7 +22,7 @@ import ollama
 import requests
 
 DEFAULT_MODEL = "qwen2.5:3b"
-OLLAMA_URL = "http://localhost:11434"
+OLLAMA_URL = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 
 
 def model_name() -> str:
@@ -39,6 +39,10 @@ def is_running() -> bool:
 
 def start() -> None:
     """Start the Ollama daemon if it isn't already running."""
+    if os.environ.get("OLLAMA_HOST"):
+        # Running in a container — Ollama is a separate service, not a subprocess
+        return
+
     if is_running():
         return
 
@@ -69,7 +73,7 @@ def ensure_model(model: str | None = None) -> None:
         local = [m["name"] for m in r.json().get("models", [])]
         if model not in local:
             print(f"   Pulling {model} (first run only, ~2 GB) …")
-            subprocess.run(["ollama", "pull", model], check=True)
+            ollama.pull(model)
     except Exception as e:
         print(f"   Warning: could not verify model presence: {e}")
 

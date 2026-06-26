@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: portfolio-advisor
+  namespace: portfolio-advisor
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: portfolio-advisor
+  template:
+    metadata:
+      labels:
+        app: portfolio-advisor
+    spec:
+      containers:
+        - name: portfolio-advisor
+          # Local: built image name.  Prod: swap for your registry path.
+          # e.g. ghcr.io/yourorg/portfolio-advisor:v1.0.0
+          image: portfolio-advisor:latest
+          imagePullPolicy: IfNotPresent   # use local image; change to Always for registry
+          ports:
+            - containerPort: 8000
+          env:
+            - name: OLLAMA_HOST
+              value: "http://ollama.portfolio-advisor.svc.cluster.local:11434"
+            - name: OLLAMA_MODEL
+              value: "qwen2.5:3b"          # override here to change model cluster-wide
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 30
