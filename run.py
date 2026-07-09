@@ -52,7 +52,7 @@ def main():
     print(f"\n🤖  Starting local LLM ({model}) …")
     llm_server.start()
     llm_server.ensure_model(model)
-    print(f"   ✓  Ollama ready  (override model: OLLAMA_MODEL=<name>)")
+    print("   ✓  Ollama ready  (override model: OLLAMA_MODEL=<name>)")
 
     portfolio = load_holdings(holdings_path)
     holdings = portfolio["holdings"]

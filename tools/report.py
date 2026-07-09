@@ -36,7 +36,7 @@ def generate(recommendation: dict, output_path: str = "portfolio_report.md") -> 
     holdings = recommendation.get("holdings", [])
 
     lines = [
-        f"# Portfolio Review  ",
+        "# Portfolio Review  ",
         f"*Generated {now}*",
         "",
         "---",
