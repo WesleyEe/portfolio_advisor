@@ -8,6 +8,9 @@ data/holdings_*.json
 # Run output
 portfolio_report.md
 
+# Generated self-signed TLS cert/key
+certs/
+
 # Python
 __pycache__/
 *.pyc

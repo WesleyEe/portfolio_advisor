@@ -22,56 +22,37 @@ The LLM runs via [Ollama](https://ollama.com) as a StatefulSet inside the cluste
 
 ## Deployment
 
-### 1. Build the image
+Full step-by-step instructions (local OrbStack setup, ingress + self-signed HTTPS, production registry/domain swap, model pulls, scaling) live in **[DEPLOYMENT.md](DEPLOYMENT.md)** — this section is just the tl;dr.
 
 ```bash
 docker build -t portfolio-advisor:latest .
-```
-
-For a registry (e.g. GHCR), tag and push before applying manifests:
-
-```bash
-docker tag portfolio-advisor:latest ghcr.io/yourorg/portfolio-advisor:v1.0.0
-docker push ghcr.io/yourorg/portfolio-advisor:v1.0.0
-```
-
-Then update `image:` in `k8s/app-deployment.yaml` to match.
-
-### 2. Apply manifests
-
-```bash
 kubectl apply -f k8s/namespace.yaml
 kubectl apply -f k8s/ollama-statefulset.yaml
 kubectl apply -f k8s/ollama-service.yaml
 kubectl apply -f k8s/app-deployment.yaml
 kubectl apply -f k8s/app-service.yaml
+
+# First run only: Ollama does not auto-pull a model, so pull it manually
+kubectl wait --for=condition=ready pod -l app=ollama -n portfolio-advisor --timeout=60s
+kubectl exec -n portfolio-advisor ollama-0 -- ollama pull qwen2.5:3b
+
+# Expose over HTTPS at a real hostname instead of port-forwarding
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.11.3/deploy/static/provider/cloud/deploy.yaml
+./scripts/gen-selfsigned-cert.sh portfolio-advisor.local
+kubectl apply -f k8s/app-ingress.yaml
 ```
 
-### 3. Wait for pods to be ready
-
-```bash
-kubectl rollout status deployment/portfolio-advisor -n portfolio-advisor
-kubectl rollout status statefulset/ollama -n portfolio-advisor
-```
-
-On first start, Ollama will pull the model (~2 GB, one-time). Watch progress with:
-
-```bash
-kubectl logs -f statefulset/ollama -n portfolio-advisor
-```
+See [DEPLOYMENT.md](DEPLOYMENT.md) for the `/etc/hosts` entry, trusting the self-signed cert, and the production-cluster variant of these steps.
 
 ## Usage
 
-The service is a `ClusterIP` by default. Access it from inside the cluster, or forward a port locally for testing:
-
-```bash
-kubectl port-forward svc/portfolio-advisor 8000:80 -n portfolio-advisor
-```
+Access the API at `https://portfolio-advisor.local` (see step 4 above). Since the cert is self-signed, `curl` needs `--cacert certs/tls.crt` unless you've added it to your system trust store.
 
 ### Analyze a portfolio
 
 ```bash
-curl -X POST http://localhost:8000/analyze \
+curl -X POST https://portfolio-advisor.local/analyze \
+  --cacert certs/tls.crt \
   -H "Content-Type: application/json" \
   -d '{
     "portfolio_name": "My Portfolio",
@@ -93,9 +74,11 @@ Add `"no_research": true` to the request body to skip the news/analyst step and 
 ### Health check
 
 ```bash
-curl http://localhost:8000/health
+curl --cacert certs/tls.crt https://portfolio-advisor.local/health
 # {"status": "ok"}
 ```
+
+Or visit `https://portfolio-advisor.local/health` in your browser.
 
 ## Configuration
 
@@ -104,15 +87,7 @@ curl http://localhost:8000/health
 | `OLLAMA_HOST` | `http://ollama.portfolio-advisor.svc.cluster.local:11434` | Ollama endpoint |
 | `OLLAMA_MODEL` | `qwen2.5:3b` | Model to use for inference |
 
-Set these in `k8s/app-deployment.yaml` under `env:`. To change the model cluster-wide, update `OLLAMA_MODEL` there rather than per-request.
-
-## Scaling
-
-Horizontal scaling is the right lever for concurrency — Ollama serializes inference, so adding replicas increases throughput linearly:
-
-```bash
-kubectl scale deployment/portfolio-advisor --replicas=4 -n portfolio-advisor
-```
+Set these in `k8s/app-deployment.yaml` under `env:`. To change the model cluster-wide, update `OLLAMA_MODEL` there rather than per-request — see [DEPLOYMENT.md](DEPLOYMENT.md) for the full model-swap and scaling procedures.
 
 ## Actions explained
 

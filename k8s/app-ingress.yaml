@@ -1,0 +1,27 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: portfolio-advisor
+  namespace: portfolio-advisor
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "300"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - portfolio-advisor.local
+      secretName: portfolio-advisor-tls
+  rules:
+    - host: portfolio-advisor.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: portfolio-advisor
+                port:
+                  number: 80

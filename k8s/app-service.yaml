@@ -10,6 +10,5 @@ spec:
     - name: http
       port: 80
       targetPort: 8000
-  # ClusterIP for prod (put an Ingress in front).
-  # Change to LoadBalancer for quick local testing via OrbStack's LB support.
+  # ClusterIP — external access goes through the Ingress (see k8s/app-ingress.yaml).
   type: ClusterIP
