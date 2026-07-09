@@ -6,6 +6,7 @@ The LLM calls are synchronous and CPU-bound on the Ollama side, so horizontal
 pod scaling (multiple replicas) is the right lever for concurrency — not async.
 """
 
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
@@ -13,6 +14,8 @@ from pydantic import BaseModel
 
 from llm import server as llm_server
 from agents import market_agent, news_analyst_agent, portfolio_manager
+
+logging.basicConfig(level=logging.INFO)
 
 
 @asynccontextmanager

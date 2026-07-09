@@ -5,8 +5,11 @@ structured investment recommendation for each holding.
 """
 
 import json
+import logging
 
 from llm import server as llm
+
+logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """You are an experienced portfolio manager conducting a thorough review of a retail investor's equity portfolio.
 
@@ -108,12 +111,14 @@ def run(market_data: dict, research: dict, risk_metrics: dict, portfolio_meta: d
     context["total_portfolio_value_usd"] = round(total_value, 2)
 
     try:
+        logger.info("Calling LLM for portfolio %s", context["portfolio_name"])
         text = llm.generate(
             prompt="Please analyze this portfolio and return your structured recommendation:\n\n"
                    + json.dumps(context, indent=2),
             system=SYSTEM_PROMPT,
             max_tokens=4000,
         )
+        logger.info("LLM call completed for portfolio %s", context["portfolio_name"])
 
         text = text.strip()
         if text.startswith("```"):
@@ -133,4 +138,5 @@ def run(market_data: dict, research: dict, risk_metrics: dict, portfolio_meta: d
         return recommendation
 
     except Exception as e:
+        logger.error("LLM analysis failed for portfolio %s: %s", context["portfolio_name"], e)
         return {"error": str(e), "raw_context": context}
