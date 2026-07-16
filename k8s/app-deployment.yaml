@@ -12,6 +12,11 @@ spec:
     metadata:
       labels:
         app: portfolio-advisor
+      annotations:
+        # Scraped by k8s/prometheus.yaml's kubernetes_sd_configs job.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
     spec:
       containers:
         - name: portfolio-advisor
@@ -26,6 +31,18 @@ spec:
               value: "http://ollama.portfolio-advisor.svc.cluster.local:11434"
             - name: OLLAMA_MODEL
               value: "qwen2.5:3b"          # override here to change model cluster-wide
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://tempo.portfolio-advisor.svc.cluster.local:4317"
+            - name: LOG_FORMAT
+              value: "json"
+            - name: ENVIRONMENT
+              value: "dev"
+            # Unset by default — Sentry init is a no-op without a DSN.
+            # Set via a Secret in prod, e.g.:
+            #   valueFrom:
+            #     secretKeyRef: { name: portfolio-advisor-secrets, key: sentry-dsn, optional: true }
+            - name: SENTRY_DSN
+              value: ""
           resources:
             requests:
               memory: "256Mi"
@@ -34,12 +51,18 @@ spec:
               memory: "512Mi"
               cpu: "500m"
           readinessProbe:
+            # Deeper check: confirms Ollama is reachable and the model is
+            # loaded before this pod gets traffic — see api.py's /health/ready.
             httpGet:
-              path: /health
+              path: /health/ready
               port: 8000
             initialDelaySeconds: 10
             periodSeconds: 10
+            failureThreshold: 3
           livenessProbe:
+            # Shallow check: only "is the process up" — must not depend on
+            # Ollama, or a slow/overloaded Ollama takes down healthy app pods
+            # in a restart loop instead of just draining their traffic.
             httpGet:
               path: /health
               port: 8000
