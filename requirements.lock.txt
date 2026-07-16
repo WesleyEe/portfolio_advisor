@@ -13,6 +13,8 @@ anyio==4.14.1
     #   httpx
     #   starlette
     #   watchfiles
+asgiref==3.11.1
+    # via opentelemetry-instrumentation-asgi
 beautifulsoup4==4.15.0
     # via yfinance
 brotli==1.2.0
@@ -23,6 +25,7 @@ certifi==2026.6.17
     #   httpcore
     #   httpx
     #   requests
+    #   sentry-sdk
 cffi==2.1.0
     # via curl-cffi
 charset-normalizer==3.4.9
@@ -39,6 +42,10 @@ fake-useragent==2.2.0
     # via ddgs
 fastapi==0.139.0
     # via -r requirements.txt
+googleapis-common-protos==1.75.0
+    # via opentelemetry-exporter-otlp-proto-grpc
+grpcio==1.82.1
+    # via opentelemetry-exporter-otlp-proto-grpc
 h11==0.16.0
     # via
     #   httpcore
@@ -76,6 +83,47 @@ numpy==2.5.1
     #   yfinance
 ollama==0.6.2
     # via -r requirements.txt
+opentelemetry-api==1.43.0
+    # via
+    #   -r requirements.txt
+    #   opentelemetry-exporter-otlp-proto-grpc
+    #   opentelemetry-instrumentation
+    #   opentelemetry-instrumentation-asgi
+    #   opentelemetry-instrumentation-fastapi
+    #   opentelemetry-sdk
+    #   opentelemetry-semantic-conventions
+opentelemetry-exporter-otlp-proto-common==1.43.0
+    # via opentelemetry-exporter-otlp-proto-grpc
+opentelemetry-exporter-otlp-proto-grpc==1.43.0
+    # via -r requirements.txt
+opentelemetry-instrumentation==0.64b0
+    # via
+    #   opentelemetry-instrumentation-asgi
+    #   opentelemetry-instrumentation-fastapi
+opentelemetry-instrumentation-asgi==0.64b0
+    # via opentelemetry-instrumentation-fastapi
+opentelemetry-instrumentation-fastapi==0.64b0
+    # via -r requirements.txt
+opentelemetry-proto==1.43.0
+    # via
+    #   opentelemetry-exporter-otlp-proto-common
+    #   opentelemetry-exporter-otlp-proto-grpc
+opentelemetry-sdk==1.43.0
+    # via
+    #   -r requirements.txt
+    #   opentelemetry-exporter-otlp-proto-grpc
+opentelemetry-semantic-conventions==0.64b0
+    # via
+    #   opentelemetry-instrumentation
+    #   opentelemetry-instrumentation-asgi
+    #   opentelemetry-instrumentation-fastapi
+    #   opentelemetry-sdk
+opentelemetry-util-http==0.64b0
+    # via
+    #   opentelemetry-instrumentation-asgi
+    #   opentelemetry-instrumentation-fastapi
+packaging==26.2
+    # via opentelemetry-instrumentation
 pandas==3.0.3
     # via
     #   -r requirements.txt
@@ -86,8 +134,13 @@ platformdirs==4.10.0
     # via yfinance
 primp==1.3.1
     # via ddgs
+prometheus-client==0.25.0
+    # via -r requirements.txt
 protobuf==7.35.1
-    # via yfinance
+    # via
+    #   googleapis-common-protos
+    #   opentelemetry-proto
+    #   yfinance
 pycparser==3.0
     # via cffi
 pydantic==2.13.4
@@ -112,6 +165,8 @@ requests==2.34.2
     #   yfinance
 rich==15.0.0
     # via curl-cffi
+sentry-sdk==2.64.0
+    # via -r requirements.txt
 six==1.17.0
     # via python-dateutil
 socksio==1.0.0
@@ -120,10 +175,19 @@ soupsieve==2.8.4
     # via beautifulsoup4
 starlette==1.3.1
     # via fastapi
+structlog==26.1.0
+    # via -r requirements.txt
+tenacity==9.1.4
+    # via -r requirements.txt
 typing-extensions==4.16.0
     # via
     #   beautifulsoup4
     #   fastapi
+    #   grpcio
+    #   opentelemetry-api
+    #   opentelemetry-exporter-otlp-proto-grpc
+    #   opentelemetry-sdk
+    #   opentelemetry-semantic-conventions
     #   pydantic
     #   pydantic-core
     #   typing-inspection
@@ -132,7 +196,9 @@ typing-inspection==0.4.2
     #   fastapi
     #   pydantic
 urllib3==2.7.0
-    # via requests
+    # via
+    #   requests
+    #   sentry-sdk
 uvicorn[standard]==0.51.0
     # via -r requirements.txt
 uvloop==0.22.1
@@ -143,5 +209,7 @@ websockets==16.0
     # via
     #   uvicorn
     #   yfinance
+wrapt==2.2.2
+    # via opentelemetry-instrumentation
 yfinance==1.5.1
     # via -r requirements.txt
