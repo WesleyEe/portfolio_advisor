@@ -1,0 +1,134 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: portfolio-advisor
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+
+    alerting:
+      alertmanagers:
+        - static_configs:
+            - targets: ["alertmanager:9093"]
+
+    rule_files:
+      - /etc/prometheus/alert-rules.yml
+
+    scrape_configs:
+      # Scrapes any pod in this namespace annotated with prometheus.io/scrape=true.
+      # The app deployment (k8s/app-deployment.yaml) carries these annotations
+      # so it's picked up automatically — no target list to keep in sync.
+      - job_name: portfolio-advisor
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: ["portfolio-advisor"]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: "true"
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+            target_label: __address__
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+
+      - job_name: prometheus
+        static_configs:
+          - targets: ["localhost:9090"]
+
+  alert-rules.yml: |
+    groups:
+      - name: portfolio-advisor
+        rules:
+          - alert: HighErrorRate
+            # >5% of /analyze requests erroring over 5 min is a real problem —
+            # this is the customer-facing endpoint the whole app exists for.
+            expr: |
+              sum(rate(analyze_requests_total{outcome="error"}[5m]))
+                /
+              sum(rate(analyze_requests_total[5m])) > 0.05
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: "High /analyze error rate ({{ $value | humanizePercentage }})"
+              description: "More than 5% of portfolio analysis requests have failed over the last 5 minutes."
+
+          - alert: NoAnalyzeTraffic
+            # A silent failure looks identical to "nobody's using it" unless we
+            # alert on total absence of successful requests too.
+            expr: sum(rate(analyze_requests_total{outcome="success"}[30m])) == 0
+            for: 30m
+            labels:
+              severity: warning
+            annotations:
+              summary: "No successful /analyze requests in 30 minutes"
+              description: "Either traffic has stopped or every request is failing before being counted as a success."
+
+          - alert: HighRequestLatencyP95
+            expr: |
+              histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{route="/analyze"}[10m])) by (le)) > 120
+            for: 10m
+            labels:
+              severity: warning
+            annotations:
+              summary: "/analyze p95 latency above 120s ({{ $value | humanizeDuration }})"
+              description: "Portfolio analysis is taking unusually long — check Ollama load and LLM call latency."
+
+          - alert: LLMHighFailureRate
+            expr: |
+              sum(rate(llm_calls_total{outcome="error"}[5m]))
+                /
+              sum(rate(llm_calls_total[5m])) > 0.1
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: "LLM call failure rate above 10%"
+              description: "Ollama is rejecting or failing a significant share of generate() calls — check the ollama-0 pod."
+
+          - alert: AgentErrorSpike
+            expr: sum(rate(agent_errors_total[10m])) by (agent) > 0.5
+            for: 10m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Elevated error rate in {{ $labels.agent }} agent"
+              description: "{{ $labels.agent }} is erroring more than 0.5/s averaged over 10 minutes."
+
+          - alert: OllamaUnreachable
+            # ollama_ready is set by each app pod's own /health/ready check
+            # (api.py) — Ollama itself exposes no /metrics endpoint to scrape
+            # directly, so this is the app's-eye view of Ollama availability.
+            expr: max(ollama_ready{job="portfolio-advisor"}) == 0
+            for: 2m
+            labels:
+              severity: critical
+            annotations:
+              summary: "No app pod can reach Ollama with the model loaded"
+              description: "Every app pod's readiness check is failing against Ollama — /analyze is blocked cluster-wide."
+
+          - alert: AppPodCrashLooping
+            # Requires kube-state-metrics (not deployed by this repo) for the
+            # kube_pod_container_status_restarts_total metric. Install it
+            # separately (`kubectl apply -f kube-state-metrics manifests`) if
+            # you want this rule to actually fire.
+            expr: increase(kube_pod_container_status_restarts_total{namespace="portfolio-advisor"}[15m]) > 3
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Pod {{ $labels.pod }} restarting repeatedly"
+              description: "{{ $labels.pod }} has restarted more than 3 times in 15 minutes."

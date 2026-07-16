@@ -1,0 +1,33 @@
+# Default receiver is a no-op so the stack works out of the box in a dev
+# cluster. Point `slack_configs.api_url` at a real incoming webhook (or add
+# an `email_configs`/`pagerduty_configs` receiver) before relying on this
+# for anything real — see DEPLOYMENT.md for the swap-in steps.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-config
+  namespace: portfolio-advisor
+data:
+  alertmanager.yml: |
+    global:
+      resolve_timeout: 5m
+
+    route:
+      receiver: default
+      group_by: ["alertname"]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+      routes:
+        - match:
+            severity: critical
+          receiver: default
+          repeat_interval: 1h
+
+    receivers:
+      - name: default
+        # Uncomment and set a real webhook to actually get paged:
+        # slack_configs:
+        #   - api_url: "https://hooks.slack.com/services/REPLACE/ME"
+        #     channel: "#portfolio-advisor-alerts"
+        #     send_resolved: true
