@@ -1,0 +1,73 @@
+# Grafana provisioning: wires up Prometheus/Tempo/Loki/Alertmanager as
+# datasources automatically on pod start — no manual "Add data source"
+# click-ops, and it's reproducible from git.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: portfolio-advisor
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        uid: prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus:9090
+        isDefault: true
+        jsonData:
+          # Only takes effect once a histogram observation actually attaches
+          # an exemplar (prometheus_client supports this but observability.py
+          # doesn't call it yet) — wired up now so it's a no-op today and
+          # "just works" if that's added later.
+          exemplarTraceIdDestinations:
+            - name: trace_id
+              datasourceUid: tempo
+
+      - name: Tempo
+        uid: tempo
+        type: tempo
+        access: proxy
+        url: http://tempo:3200
+        jsonData:
+          tracesToLogsV2:
+            datasourceUid: loki
+            spanStartTimeShift: "-5m"
+            spanEndTimeShift: "5m"
+            filterByTraceID: false
+            filterBySpanID: false
+            # Custom query instead of a tags mapping: the OTel service.name
+            # ("portfolio-advisor-api") and the Loki "app" label (from the
+            # k8s pod label, "portfolio-advisor") don't match 1:1, so a
+            # tags-based correlation would silently fail. `namespace` is a
+            # label the OTel Collector always attaches (k8sattributesprocessor)
+            # and is guaranteed to scope to this app, so search within it by
+            # trace ID text match instead.
+            customQuery: true
+            query: '{namespace="portfolio-advisor"} |= "${__trace.traceId}"'
+
+      - name: Loki
+        uid: loki
+        type: loki
+        access: proxy
+        url: http://loki:3100
+        jsonData:
+          # Turns any trace_id found in a log line into a clickable jump to
+          # that trace in Tempo — the reverse direction of tracesToLogsV2
+          # above. Deliberately matches on line content, not a Loki label:
+          # trace_id is unique per request and indexing it as a label would
+          # blow up cardinality (see k8s/otel-collector.yaml).
+          derivedFields:
+            - name: TraceID
+              matcherRegex: '"trace_id":"(\w+)"'
+              datasourceUid: tempo
+              url: "${__value.raw}"
+
+      - name: Alertmanager
+        uid: alertmanager
+        type: alertmanager
+        access: proxy
+        url: http://alertmanager:9093
+        jsonData:
+          implementation: prometheus

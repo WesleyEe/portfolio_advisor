@@ -1,0 +1,147 @@
+# Split into two ConfigMaps, one per mount target, so both can be mounted as
+# whole directories in k8s/grafana.yaml instead of via subPath. subPath mounts
+# don't pick up ConfigMap updates without a pod restart — a whole-directory
+# mount does (via kubelet's periodic symlink swap), which is what makes
+# updateIntervalSeconds below actually mean something.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards-provider
+  namespace: portfolio-advisor
+data:
+  dashboards-provider.yaml: |
+    apiVersion: 1
+    providers:
+      - name: portfolio-advisor
+        folder: "Portfolio Advisor"
+        type: file
+        updateIntervalSeconds: 30
+        options:
+          path: /var/lib/grafana/dashboards
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards-content
+  namespace: portfolio-advisor
+data:
+  portfolio-advisor.json: |
+    {
+      "title": "Portfolio Advisor",
+      "uid": "portfolio-advisor",
+      "schemaVersion": 39,
+      "timezone": "browser",
+      "time": { "from": "now-6h", "to": "now" },
+      "refresh": "30s",
+      "panels": [
+        {
+          "id": 1,
+          "title": "/analyze requests (success vs error)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "expr": "sum(rate(analyze_requests_total[5m])) by (outcome)",
+              "legendFormat": "{{outcome}}"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "title": "/analyze latency (p50 / p95)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket{route=\"/analyze\"}[5m])) by (le))",
+              "legendFormat": "p50"
+            },
+            {
+              "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{route=\"/analyze\"}[5m])) by (le))",
+              "legendFormat": "p95"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "title": "LLM calls (success vs error)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "expr": "sum(rate(llm_calls_total[5m])) by (outcome)",
+              "legendFormat": "{{outcome}}"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "title": "LLM token throughput",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "expr": "sum(rate(llm_tokens_total[5m])) by (kind)",
+              "legendFormat": "{{kind}}"
+            }
+          ]
+        },
+        {
+          "id": 5,
+          "title": "Agent errors by stage",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "expr": "sum(rate(agent_errors_total[5m])) by (agent, stage)",
+              "legendFormat": "{{agent}}/{{stage}}"
+            }
+          ]
+        },
+        {
+          "id": 6,
+          "title": "Ollama readiness (across app pods)",
+          "type": "stat",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            { "expr": "min(ollama_ready)" }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "green", "value": 1 }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "id": 7,
+          "title": "Recent errors (Loki)",
+          "type": "logs",
+          "gridPos": { "h": 10, "w": 24, "x": 0, "y": 24 },
+          "datasource": { "type": "loki", "uid": "loki" },
+          "targets": [
+            {
+              "expr": "{namespace=\"portfolio-advisor\"} | json | level=~\"error|warning\"",
+              "datasource": { "type": "loki", "uid": "loki" }
+            }
+          ],
+          "options": {
+            "showTime": true,
+            "showLabels": false,
+            "wrapLogMessage": true,
+            "sortOrder": "Descending"
+          }
+        }
+      ]
+    }

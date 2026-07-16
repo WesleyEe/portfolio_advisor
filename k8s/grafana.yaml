@@ -1,0 +1,120 @@
+# Grafana is the only observability UI meant to be reachable outside the
+# cluster (see k8s/grafana-ingress.yaml) — Prometheus, Tempo, Loki, and
+# Alertmanager stay ClusterIP-only and are wired in here as datasources.
+# That keeps auth in exactly one place instead of four unauthenticated
+# tools each needing their own gate.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: portfolio-advisor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana:11.2.0
+          ports:
+            - containerPort: 3000
+          env:
+            - name: GF_SECURITY_ADMIN_USER
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-admin
+                  key: admin-user
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-admin
+                  key: admin-password
+            - name: GF_SERVER_ROOT_URL
+              value: "https://grafana.portfolio-advisor.local"
+            # ── SSO (off by default; see DEPLOYMENT.md to enable) ──────────
+            # Flip to "true" and populate grafana-oauth once you have real
+            # IdP credentials (Google/Okta/GitHub/etc via generic OAuth).
+            # Until then Grafana falls back to the admin user/password above.
+            - name: GF_AUTH_GENERIC_OAUTH_ENABLED
+              value: "false"
+            - name: GF_AUTH_GENERIC_OAUTH_NAME
+              value: "SSO"
+            - name: GF_AUTH_GENERIC_OAUTH_SCOPES
+              value: "openid email profile"
+            - name: GF_AUTH_GENERIC_OAUTH_AUTH_URL
+              value: "https://REPLACE-ME.idp.example.com/oauth2/authorize"
+            - name: GF_AUTH_GENERIC_OAUTH_TOKEN_URL
+              value: "https://REPLACE-ME.idp.example.com/oauth2/token"
+            - name: GF_AUTH_GENERIC_OAUTH_API_URL
+              value: "https://REPLACE-ME.idp.example.com/userinfo"
+            - name: GF_AUTH_GENERIC_OAUTH_ALLOWED_DOMAINS
+              value: "REPLACE-ME.com"
+            - name: GF_AUTH_GENERIC_OAUTH_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-oauth
+                  key: client-id
+                  optional: true
+            - name: GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-oauth
+                  key: client-secret
+                  optional: true
+          volumeMounts:
+            - name: datasources
+              mountPath: /etc/grafana/provisioning/datasources
+            - name: dashboards-provider
+              mountPath: /etc/grafana/provisioning/dashboards
+            - name: dashboards-content
+              mountPath: /var/lib/grafana/dashboards
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "250m"
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 30
+      volumes:
+        - name: datasources
+          configMap:
+            name: grafana-datasources
+        - name: dashboards-provider
+          configMap:
+            name: grafana-dashboards-provider
+        - name: dashboards-content
+          configMap:
+            name: grafana-dashboards-content
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: portfolio-advisor
+spec:
+  selector:
+    app: grafana
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+  # ClusterIP — external access goes through k8s/grafana-ingress.yaml, same
+  # pattern as the app itself (see k8s/app-service.yaml).
+  type: ClusterIP
