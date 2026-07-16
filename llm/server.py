@@ -20,9 +20,16 @@ import time
 
 import ollama
 import requests
+import structlog
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+
+import observability
 
 DEFAULT_MODEL = "qwen2.5:3b"
 OLLAMA_URL = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+
+logger = structlog.get_logger(__name__)
+tracer = observability.get_tracer(__name__)
 
 
 def model_name() -> str:
@@ -33,6 +40,16 @@ def is_running() -> bool:
     try:
         r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=2)
         return r.status_code == 200
+    except Exception:
+        return False
+
+
+def has_model(model: str) -> bool:
+    """Used by the readiness probe — is `model` actually pulled and available?"""
+    try:
+        r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=2)
+        local = [m["name"] for m in r.json().get("models", [])]
+        return model in local
     except Exception:
         return False
 
@@ -78,6 +95,16 @@ def ensure_model(model: str | None = None) -> None:
         print(f"   Warning: could not verify model presence: {e}")
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=10),
+    retry=retry_if_exception_type((requests.exceptions.RequestException, ollama.ResponseError, ConnectionError)),
+    reraise=True,
+)
+def _chat(**kwargs) -> dict:
+    return ollama.chat(**kwargs)
+
+
 def generate(
     prompt: str,
     system: str = "",
@@ -90,6 +117,9 @@ def generate(
 
     json_mode=True tells Ollama to constrain output to valid JSON, which
     dramatically improves reliability for structured-output tasks.
+
+    Transient failures (connection errors, Ollama restarts mid-request) are
+    retried up to 3x with exponential backoff before propagating.
     """
     model = model or model_name()
     messages: list[dict] = []
@@ -105,5 +135,38 @@ def generate(
     if json_mode:
         kwargs["format"] = "json"
 
-    response = ollama.chat(**kwargs)
-    return response["message"]["content"]
+    with tracer.start_as_current_span("llm.generate") as span:
+        span.set_attribute("llm.model", model)
+        span.set_attribute("llm.max_tokens", max_tokens)
+        span.set_attribute("llm.json_mode", json_mode)
+
+        start = time.time()
+        try:
+            response = _chat(**kwargs)
+        except Exception as e:
+            duration = time.time() - start
+            observability.LLM_CALLS.labels(model=model, outcome="error").inc()
+            observability.LLM_CALL_DURATION.labels(model=model).observe(duration)
+            logger.error("llm_call_failed", model=model, duration_s=round(duration, 2), error=str(e))
+            observability.capture_exception(e, model=model, max_tokens=max_tokens)
+            raise
+        duration = time.time() - start
+
+        prompt_tokens = response.get("prompt_eval_count", 0)
+        completion_tokens = response.get("eval_count", 0)
+        observability.LLM_CALLS.labels(model=model, outcome="success").inc()
+        observability.LLM_CALL_DURATION.labels(model=model).observe(duration)
+        observability.LLM_TOKENS.labels(model=model, kind="prompt").inc(prompt_tokens)
+        observability.LLM_TOKENS.labels(model=model, kind="completion").inc(completion_tokens)
+        span.set_attribute("llm.prompt_tokens", prompt_tokens)
+        span.set_attribute("llm.completion_tokens", completion_tokens)
+        span.set_attribute("llm.duration_s", duration)
+
+        logger.info(
+            "llm_call_completed",
+            model=model,
+            duration_s=round(duration, 2),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
+        return response["message"]["content"]

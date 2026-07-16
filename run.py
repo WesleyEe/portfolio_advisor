@@ -19,9 +19,21 @@ from pathlib import Path
 # Ensure project root is on path when run directly
 sys.path.insert(0, str(Path(__file__).parent))
 
+import structlog
+
+import observability
 from llm import server as llm_server
 from agents import market_agent, news_analyst_agent, portfolio_manager
 from tools import report
+
+SERVICE_NAME = "portfolio-advisor-cli"
+
+observability.setup_logging(SERVICE_NAME)
+observability.setup_tracing(SERVICE_NAME)
+observability.setup_sentry(SERVICE_NAME)
+
+logger = structlog.get_logger(__name__)
+tracer = observability.get_tracer(__name__)
 
 
 def load_holdings(path: str) -> dict:
@@ -40,69 +52,77 @@ def main():
     parser.add_argument("--output", default="portfolio_report.md", help="Output markdown report path")
     parser.add_argument("--no-research", action="store_true", help="Skip web research (faster, offline mode)")
     args = parser.parse_args()
+    observability.bind_request_context(observability.new_request_id())
 
-    # ── 1. Load holdings ──────────────────────────────────────────────────────
-    holdings_path = Path(args.holdings)
-    if not holdings_path.exists():
-        print(f"✗  Holdings file not found: {holdings_path}")
-        sys.exit(1)
+    with tracer.start_as_current_span("cli.run") as root_span:
+        # ── 1. Load holdings ──────────────────────────────────────────────────
+        holdings_path = Path(args.holdings)
+        if not holdings_path.exists():
+            print(f"✗  Holdings file not found: {holdings_path}")
+            logger.error("holdings_file_not_found", path=str(holdings_path))
+            sys.exit(1)
 
-    # ── 0. Start local LLM ────────────────────────────────────────────────────
-    model = llm_server.model_name()
-    print(f"\n🤖  Starting local LLM ({model}) …")
-    llm_server.start()
-    llm_server.ensure_model(model)
-    print("   ✓  Ollama ready  (override model: OLLAMA_MODEL=<name>)")
+        # ── 0. Start local LLM ────────────────────────────────────────────────
+        model = llm_server.model_name()
+        print(f"\n🤖  Starting local LLM ({model}) …")
+        llm_server.start()
+        llm_server.ensure_model(model)
+        print("   ✓  Ollama ready  (override model: OLLAMA_MODEL=<name>)")
 
-    portfolio = load_holdings(holdings_path)
-    holdings = portfolio["holdings"]
-    print(f"\n📂  Loaded {len(holdings)} holdings from {holdings_path}")
-    for h in holdings:
-        print(f"    {h['ticker']:6}  {h['shares']} shares @ ${h['avg_cost']:.2f}")
+        portfolio = load_holdings(holdings_path)
+        holdings = portfolio["holdings"]
+        root_span.set_attribute("num_holdings", len(holdings))
+        print(f"\n📂  Loaded {len(holdings)} holdings from {holdings_path}")
+        for h in holdings:
+            print(f"    {h['ticker']:6}  {h['shares']} shares @ ${h['avg_cost']:.2f}")
 
-    # ── 2. Market data ────────────────────────────────────────────────────────
-    spinner("Fetching live market data")
-    t0 = time.time()
-    market_data = market_agent.run(holdings)
-    risk_metrics = market_agent.portfolio_risk_metrics(holdings)
-    print(f"   ✓  Market data fetched in {time.time()-t0:.1f}s")
-
-    for ticker, data in market_data.items():
-        if "error" not in data:
-            price = data.get("current_price")
-            pnl = data.get("pnl_pct")
-            print(f"    {ticker:6}  ${price:.2f}  ({'+' if pnl >= 0 else ''}{pnl:.1f}%)")
-
-    # ── 3. News + analyst research ────────────────────────────────────────────
-    if args.no_research:
-        print("\n⚡  Skipping web research (--no-research flag)")
-        research = {}
-    else:
-        spinner("Running news + analyst research (this takes ~30–60s)")
+        # ── 2. Market data ────────────────────────────────────────────────────
+        spinner("Fetching live market data")
         t0 = time.time()
-        research = news_analyst_agent.run(market_data)
-        print(f"   ✓  Research complete in {time.time()-t0:.1f}s")
+        market_data = market_agent.run(holdings)
+        risk_metrics = market_agent.portfolio_risk_metrics(holdings)
+        print(f"   ✓  Market data fetched in {time.time()-t0:.1f}s")
+        logger.info("market_data_fetched", duration_s=round(time.time() - t0, 2))
 
-        for ticker, r in research.items():
-            news_sentiment = r.get("news", {}).get("sentiment", "?")
-            analyst_rating = r.get("analyst", {}).get("consensus_rating", "?")
-            print(f"    {ticker:6}  news: {news_sentiment:8}  analyst: {analyst_rating}")
+        for ticker, data in market_data.items():
+            if "error" not in data:
+                price = data.get("current_price")
+                pnl = data.get("pnl_pct")
+                print(f"    {ticker:6}  ${price:.2f}  ({'+' if pnl >= 0 else ''}{pnl:.1f}%)")
 
-    # ── 4. Portfolio Manager synthesis ────────────────────────────────────────
-    spinner("Portfolio Manager synthesizing recommendation")
-    t0 = time.time()
-    recommendation = portfolio_manager.run(market_data, research, risk_metrics, portfolio)
-    print(f"   ✓  Analysis complete in {time.time()-t0:.1f}s")
+        # ── 3. News + analyst research ────────────────────────────────────────
+        if args.no_research:
+            print("\n⚡  Skipping web research (--no-research flag)")
+            research = {}
+        else:
+            spinner("Running news + analyst research (this takes ~30–60s)")
+            t0 = time.time()
+            research = news_analyst_agent.run(market_data)
+            print(f"   ✓  Research complete in {time.time()-t0:.1f}s")
 
-    if "error" in recommendation:
-        print(f"\n✗  Portfolio Manager error: {recommendation['error']}")
-        sys.exit(1)
+            for ticker, r in research.items():
+                news_sentiment = r.get("news", {}).get("sentiment", "?")
+                analyst_rating = r.get("analyst", {}).get("consensus_rating", "?")
+                print(f"    {ticker:6}  news: {news_sentiment:8}  analyst: {analyst_rating}")
 
-    # ── 5. Output ─────────────────────────────────────────────────────────────
-    report.print_cli_summary(recommendation)
+        # ── 4. Portfolio Manager synthesis ──────────────────────────────────────
+        spinner("Portfolio Manager synthesizing recommendation")
+        t0 = time.time()
+        recommendation = portfolio_manager.run(market_data, research, risk_metrics, portfolio)
+        print(f"   ✓  Analysis complete in {time.time()-t0:.1f}s")
 
-    output_path = report.generate(recommendation, args.output)
-    print(f"📄  Full report saved to: {output_path}\n")
+        if "error" in recommendation:
+            observability.ANALYZE_REQUESTS.labels(outcome="error").inc()
+            print(f"\n✗  Portfolio Manager error: {recommendation['error']}")
+            sys.exit(1)
+
+        observability.ANALYZE_REQUESTS.labels(outcome="success").inc()
+
+        # ── 5. Output ────────────────────────────────────────────────────────
+        report.print_cli_summary(recommendation)
+
+        output_path = report.generate(recommendation, args.output)
+        print(f"📄  Full report saved to: {output_path}\n")
 
 
 if __name__ == "__main__":

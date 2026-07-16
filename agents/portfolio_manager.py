@@ -5,11 +5,14 @@ structured investment recommendation for each holding.
 """
 
 import json
-import logging
 
+import structlog
+
+import observability
 from llm import server as llm
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
+tracer = observability.get_tracer(__name__)
 
 SYSTEM_PROMPT = """You are an experienced portfolio manager conducting a thorough review of a retail investor's equity portfolio.
 
@@ -110,33 +113,40 @@ def run(market_data: dict, research: dict, risk_metrics: dict, portfolio_meta: d
 
     context["total_portfolio_value_usd"] = round(total_value, 2)
 
-    try:
-        logger.info("Calling LLM for portfolio %s", context["portfolio_name"])
-        text = llm.generate(
-            prompt="Please analyze this portfolio and return your structured recommendation:\n\n"
-                   + json.dumps(context, indent=2),
-            system=SYSTEM_PROMPT,
-            max_tokens=4000,
-        )
-        logger.info("LLM call completed for portfolio %s", context["portfolio_name"])
+    portfolio_name = context["portfolio_name"]
+    with tracer.start_as_current_span("portfolio_manager.synthesize") as span:
+        span.set_attribute("portfolio_name", portfolio_name)
+        span.set_attribute("num_holdings", len(context["holdings_data"]))
+        try:
+            logger.info("portfolio_manager_llm_started", portfolio_name=portfolio_name)
+            text = llm.generate(
+                prompt="Please analyze this portfolio and return your structured recommendation:\n\n"
+                       + json.dumps(context, indent=2),
+                system=SYSTEM_PROMPT,
+                max_tokens=4000,
+            )
+            logger.info("portfolio_manager_llm_completed", portfolio_name=portfolio_name)
 
-        text = text.strip()
-        if text.startswith("```"):
-            text = text.split("```")[1]
-            if text.startswith("json"):
-                text = text[4:]
+            text = text.strip()
+            if text.startswith("```"):
+                text = text.split("```")[1]
+                if text.startswith("json"):
+                    text = text[4:]
 
-        recommendation = json.loads(text)
-        seen: set = set()
-        deduped = []
-        for h in recommendation.get("holdings", []):
-            if h.get("ticker") not in seen:
-                seen.add(h.get("ticker"))
-                deduped.append(h)
-        recommendation["holdings"] = deduped
-        recommendation["total_portfolio_value_usd"] = context["total_portfolio_value_usd"]
-        return recommendation
+            recommendation = json.loads(text)
+            seen: set = set()
+            deduped = []
+            for h in recommendation.get("holdings", []):
+                if h.get("ticker") not in seen:
+                    seen.add(h.get("ticker"))
+                    deduped.append(h)
+            recommendation["holdings"] = deduped
+            recommendation["total_portfolio_value_usd"] = context["total_portfolio_value_usd"]
+            return recommendation
 
-    except Exception as e:
-        logger.error("LLM analysis failed for portfolio %s: %s", context["portfolio_name"], e)
-        return {"error": str(e), "raw_context": context}
+        except Exception as e:
+            observability.AGENT_ERRORS.labels(agent="portfolio_manager", stage="synthesize").inc()
+            logger.error("portfolio_manager_synthesis_failed", portfolio_name=portfolio_name, error=str(e))
+            observability.capture_exception(e, portfolio_name=portfolio_name)
+            span.record_exception(e)
+            return {"error": str(e), "raw_context": context}

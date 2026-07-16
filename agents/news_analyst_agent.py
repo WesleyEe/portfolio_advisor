@@ -10,8 +10,13 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from ddgs import DDGS
+import structlog
 
+import observability
 from llm import server as llm
+
+logger = structlog.get_logger(__name__)
+tracer = observability.get_tracer(__name__)
 
 NEWS_SYSTEM = """You are a financial news research assistant.
 Given a set of raw web search snippets about a stock, produce a concise JSON summary.
@@ -45,14 +50,18 @@ Return ONLY valid JSON, no prose, no markdown fences. Schema:
 
 def _ddg_search(query: str, max_results: int = 6) -> list[dict]:
     """Return DuckDuckGo text results, retrying once on rate-limit."""
-    for attempt in range(2):
-        try:
-            with DDGS() as ddgs:
-                return list(ddgs.text(query, max_results=max_results))
-        except Exception:
-            if attempt == 0:
-                time.sleep(2)
-    return []
+    with tracer.start_as_current_span("news_analyst_agent.ddg_search") as span:
+        span.set_attribute("query", query)
+        for attempt in range(2):
+            try:
+                with DDGS() as ddgs:
+                    return list(ddgs.text(query, max_results=max_results))
+            except Exception as e:
+                logger.warning("ddg_search_failed", query=query, attempt=attempt, error=str(e))
+                if attempt == 0:
+                    time.sleep(2)
+        observability.AGENT_ERRORS.labels(agent="news_analyst", stage="ddg_search").inc()
+        return []
 
 
 def _snippets_text(results: list[dict]) -> str:
@@ -78,6 +87,9 @@ def get_news(ticker: str, company_name: str) -> dict:
         text = llm.generate(prompt=prompt, system=NEWS_SYSTEM, max_tokens=600)
         return json.loads(text)
     except Exception as e:
+        observability.AGENT_ERRORS.labels(agent="news_analyst", stage="get_news").inc()
+        logger.error("get_news_failed", ticker=ticker, error=str(e))
+        observability.capture_exception(e, ticker=ticker, stage="get_news")
         return {"ticker": ticker, "error": str(e)}
 
 
@@ -95,6 +107,9 @@ def get_analyst_views(ticker: str, company_name: str) -> dict:
         text = llm.generate(prompt=prompt, system=ANALYST_SYSTEM, max_tokens=600)
         return json.loads(text)
     except Exception as e:
+        observability.AGENT_ERRORS.labels(agent="news_analyst", stage="get_analyst_views").inc()
+        logger.error("get_analyst_views_failed", ticker=ticker, error=str(e))
+        observability.capture_exception(e, ticker=ticker, stage="get_analyst_views")
         return {"ticker": ticker, "error": str(e)}
 
 
@@ -106,29 +121,36 @@ def run(market_data: dict) -> dict:
     results: dict = {}
     tasks = []
 
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        for ticker, data in market_data.items():
-            if "error" in data:
-                continue
-            company = data.get("company_name", ticker)
-            tasks.append((ticker, executor.submit(get_news, ticker, company)))
-            tasks.append((ticker + "_analyst", executor.submit(get_analyst_views, ticker, company)))
+    with tracer.start_as_current_span("news_analyst_agent.run") as span:
+        span.set_attribute("num_tickers", len(market_data))
 
-        for key, future in tasks:
-            is_analyst = key.endswith("_analyst")
-            ticker = key.replace("_analyst", "")
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            for ticker, data in market_data.items():
+                if "error" in data:
+                    continue
+                company = data.get("company_name", ticker)
+                tasks.append((ticker, executor.submit(get_news, ticker, company)))
+                tasks.append((ticker + "_analyst", executor.submit(get_analyst_views, ticker, company)))
 
-            if ticker not in results:
-                results[ticker] = {}
+            for key, future in tasks:
+                is_analyst = key.endswith("_analyst")
+                ticker = key.replace("_analyst", "")
 
-            try:
-                result = future.result(timeout=90)
-                if is_analyst:
-                    results[ticker]["analyst"] = result
-                else:
-                    results[ticker]["news"] = result
-            except Exception as e:
-                field = "analyst" if is_analyst else "news"
-                results[ticker][field] = {"error": str(e)}
+                if ticker not in results:
+                    results[ticker] = {}
 
-    return results
+                try:
+                    result = future.result(timeout=90)
+                    if is_analyst:
+                        results[ticker]["analyst"] = result
+                    else:
+                        results[ticker]["news"] = result
+                except Exception as e:
+                    field = "analyst" if is_analyst else "news"
+                    observability.AGENT_ERRORS.labels(agent="news_analyst", stage=field).inc()
+                    logger.error("news_analyst_task_failed", ticker=ticker, field=field, error=str(e))
+                    observability.capture_exception(e, ticker=ticker, field=field)
+                    results[ticker][field] = {"error": str(e)}
+
+        logger.info("news_analyst_agent_completed", num_tickers=len(market_data))
+        return results

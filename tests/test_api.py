@@ -20,6 +20,31 @@ def test_health(client):
     assert resp.json() == {"status": "ok"}
 
 
+def test_health_ready_reports_ollama_state(client):
+    with patch.object(llm_server, "is_running", return_value=True), patch.object(
+        llm_server, "has_model", return_value=True
+    ):
+        resp = client.get("/health/ready")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "ready"
+    assert body["ollama_reachable"] is True
+    assert body["model_loaded"] is True
+
+
+def test_health_ready_returns_503_when_ollama_unreachable(client):
+    with patch.object(llm_server, "is_running", return_value=False):
+        resp = client.get("/health/ready")
+    assert resp.status_code == 503
+    assert resp.json()["status"] == "not_ready"
+
+
+def test_metrics_endpoint_exposes_prometheus_format(client):
+    resp = client.get("/metrics")
+    assert resp.status_code == 200
+    assert "analyze_requests_total" in resp.text
+
+
 def test_analyze_rejects_empty_holdings(client):
     resp = client.post(
         "/analyze",

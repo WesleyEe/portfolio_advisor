@@ -6,16 +6,17 @@ Fetches live price, returns, and basic fundamentals for each holding.
 import yfinance as yf
 from datetime import datetime, timedelta
 import pandas as pd
+import structlog
+
+import observability
+
+logger = structlog.get_logger(__name__)
+tracer = observability.get_tracer(__name__)
 
 
-def run(holdings: list[dict]) -> dict:
-    """
-    Returns a dict keyed by ticker with price data and basic fundamentals.
-    """
-    results = {}
-
-    for holding in holdings:
-        ticker = holding["ticker"]
+def _fetch_ticker(ticker: str, holding: dict) -> dict:
+    with tracer.start_as_current_span("market_agent.fetch_ticker") as span:
+        span.set_attribute("ticker", ticker)
         try:
             stock = yf.Ticker(ticker)
             info = stock.info
@@ -42,7 +43,7 @@ def run(holdings: list[dict]) -> dict:
             unrealized_pnl = round((current_price - avg_cost) * shares, 2) if current_price else None
             pnl_pct = round(((current_price - avg_cost) / avg_cost) * 100, 2) if current_price else None
 
-            results[ticker] = {
+            return {
                 "ticker": ticker,
                 "current_price": current_price,
                 "avg_cost": avg_cost,
@@ -62,8 +63,21 @@ def run(holdings: list[dict]) -> dict:
                 "company_name": info.get("longName", ticker),
             }
         except Exception as e:
-            results[ticker] = {"ticker": ticker, "error": str(e)}
+            observability.AGENT_ERRORS.labels(agent="market", stage="fetch_ticker").inc()
+            logger.error("market_agent_fetch_failed", ticker=ticker, error=str(e))
+            observability.capture_exception(e, ticker=ticker)
+            span.record_exception(e)
+            return {"ticker": ticker, "error": str(e)}
 
+
+def run(holdings: list[dict]) -> dict:
+    """
+    Returns a dict keyed by ticker with price data and basic fundamentals.
+    """
+    results = {}
+    for holding in holdings:
+        ticker = holding["ticker"]
+        results[ticker] = _fetch_ticker(ticker, holding)
     return results
 
 
@@ -73,29 +87,34 @@ def portfolio_risk_metrics(holdings: list[dict]) -> dict:
     """
     tickers = [h["ticker"] for h in holdings]
 
-    try:
-        # 90-day close prices for all tickers
-        end = datetime.today()
-        start = end - timedelta(days=95)
-        raw = yf.download(
-            tickers,
-            start=start.strftime("%Y-%m-%d"),
-            end=end.strftime("%Y-%m-%d"),
-            progress=False,
-            auto_adjust=True
-        )["Close"]
+    with tracer.start_as_current_span("market_agent.portfolio_risk_metrics") as span:
+        try:
+            # 90-day close prices for all tickers
+            end = datetime.today()
+            start = end - timedelta(days=95)
+            raw = yf.download(
+                tickers,
+                start=start.strftime("%Y-%m-%d"),
+                end=end.strftime("%Y-%m-%d"),
+                progress=False,
+                auto_adjust=True
+            )["Close"]
 
-        if isinstance(raw, pd.Series):
-            raw = raw.to_frame(name=tickers[0])
+            if isinstance(raw, pd.Series):
+                raw = raw.to_frame(name=tickers[0])
 
-        returns = raw.pct_change().dropna()
-        vol = returns.std() * (252 ** 0.5) * 100  # annualised %
+            returns = raw.pct_change().dropna()
+            vol = returns.std() * (252 ** 0.5) * 100  # annualised %
 
-        corr_matrix = returns.corr().round(2).to_dict()
+            corr_matrix = returns.corr().round(2).to_dict()
 
-        return {
-            "annualised_volatility_pct": {t: round(float(v), 1) for t, v in vol.items()},
-            "correlation_matrix": corr_matrix,
-        }
-    except Exception as e:
-        return {"error": str(e)}
+            return {
+                "annualised_volatility_pct": {t: round(float(v), 1) for t, v in vol.items()},
+                "correlation_matrix": corr_matrix,
+            }
+        except Exception as e:
+            observability.AGENT_ERRORS.labels(agent="market", stage="risk_metrics").inc()
+            logger.error("market_agent_risk_metrics_failed", tickers=tickers, error=str(e))
+            observability.capture_exception(e, tickers=tickers)
+            span.record_exception(e)
+            return {"error": str(e)}
