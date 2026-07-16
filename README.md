@@ -78,7 +78,11 @@ curl --cacert certs/tls.crt https://portfolio-advisor.local/health
 # {"status": "ok"}
 ```
 
-Or visit `https://portfolio-advisor.local/health` in your browser.
+Or visit `https://portfolio-advisor.local/health` in your browser. `/health` is a bare liveness check (process up); `GET /health/ready` additionally confirms Ollama is reachable with the model loaded, returning `503` if not.
+
+## Observability
+
+Structured JSON logs, Prometheus metrics (`/metrics`), and OpenTelemetry traces are built in and correlated by `request_id`/`trace_id`. Deploy the LGTM stack — Loki (logs) + Grafana (UI) + Tempo (traces) + Prometheus (metrics) — plus Alertmanager alongside the app for dashboards, log search, and alerting. Grafana is the only one of these exposed outside the cluster (`https://grafana.portfolio-advisor.local`, SSO-ready) — Prometheus/Tempo/Loki/Alertmanager stay internal and are wired in as datasources, since none of them have their own auth. Traces and logs are cross-linked (click a span → matching logs, click a `trace_id` in a log line → that trace). See the **[Observability stack](DEPLOYMENT.md#observability-stack)** section of DEPLOYMENT.md for setup. Unhandled errors and agent failures report to Sentry when `SENTRY_DSN` is set.
 
 ## Configuration
 
@@ -86,6 +90,10 @@ Or visit `https://portfolio-advisor.local/health` in your browser.
 |---|---|---|
 | `OLLAMA_HOST` | `http://ollama.portfolio-advisor.svc.cluster.local:11434` | Ollama endpoint |
 | `OLLAMA_MODEL` | `qwen2.5:3b` | Model to use for inference |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | Where traces are exported (OTLP/gRPC) |
+| `SENTRY_DSN` | unset | Enables Sentry error reporting when set |
+| `LOG_FORMAT` | `json` when not a TTY | Force JSON (`json`) or human-readable log output |
+| `LOG_LEVEL` | `INFO` | Log verbosity |
 
 Set these in `k8s/app-deployment.yaml` under `env:`. To change the model cluster-wide, update `OLLAMA_MODEL` there rather than per-request — see [DEPLOYMENT.md](DEPLOYMENT.md) for the full model-swap and scaling procedures.
 
