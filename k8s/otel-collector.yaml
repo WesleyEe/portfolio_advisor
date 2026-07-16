@@ -1,0 +1,178 @@
+# Replaces Promtail (deprecated in favor of Grafana Alloy / OTel-native
+# pipelines) as the log-shipping agent. Same job — tail every pod's
+# container logs off the node filesystem and push them to Loki — but via
+# the OpenTelemetry Collector's filelog receiver + loki exporter instead of
+# a Loki-specific agent. Requires the *-contrib collector image: filelog,
+# k8sattributes, and the loki exporter are all contrib-only components, not
+# in the core otel/opentelemetry-collector image.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-collector
+  namespace: portfolio-advisor
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otel-collector
+rules:
+  # k8sattributesprocessor needs to watch pods/namespaces to enrich each log
+  # record with pod name/namespace/labels — same read-only shape as
+  # Prometheus's and (the now-removed) Promtail's RBAC.
+  - apiGroups: [""]
+    resources: ["pods", "namespaces", "nodes"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otel-collector
+subjects:
+  - kind: ServiceAccount
+    name: otel-collector
+    namespace: portfolio-advisor
+roleRef:
+  kind: ClusterRole
+  name: otel-collector
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: portfolio-advisor
+data:
+  otel-collector-config.yaml: |
+    extensions:
+      # Persists filelog's per-file read offsets across restarts — the OTel
+      # Collector's equivalent of Promtail's positions.yaml, so a restart
+      # resumes tailing instead of re-reading (or skipping) whole files.
+      file_storage:
+        directory: /var/lib/otelcol/file_storage
+
+    receivers:
+      filelog:
+        include:
+          - /var/log/pods/portfolio-advisor_*/*/*.log
+        start_at: beginning
+        include_file_path: true
+        storage: file_storage
+        operators:
+          # Auto-detects and parses the docker/CRI-O/containerd log-file
+          # wrapper format, extracting the app's raw log line as `body`
+          # (same job Promtail's `cri: {}` pipeline stage did).
+          - type: container
+            id: container-parser
+          # The app's raw log line is our own structlog JSON — parse it so
+          # fields like `level` are available as attributes, not just buried
+          # in an opaque body string.
+          - type: json_parser
+            id: json-parser
+            parse_from: body
+            parse_to: attributes
+            if: 'body matches "^\\{"'
+
+    processors:
+      k8sattributes:
+        auth_type: "serviceAccount"
+        passthrough: false
+        filter:
+          node_from_env_var: K8S_NODE_NAME
+        extract:
+          metadata:
+            - k8s.pod.name
+            - k8s.namespace.name
+            - k8s.pod.uid
+            - k8s.container.name
+            - k8s.node.name
+          labels:
+            - tag_name: app
+              key: app
+              from: pod
+        pod_association:
+          - sources:
+              - from: resource_attribute
+                name: k8s.pod.uid
+
+      # Deliberately promotes only low-cardinality fields to Loki stream
+      # labels — request_id/trace_id stay in the log body/attributes,
+      # queryable via `| json` at query time, same cardinality reasoning as
+      # the old Promtail config (see git history of k8s/promtail.yaml).
+      attributes/loki-labels:
+        actions:
+          - key: loki.attribute.labels
+            action: insert
+            value: "level"
+          - key: loki.resource.labels
+            action: insert
+            value: "k8s.namespace.name, k8s.pod.name, k8s.container.name, app"
+
+      batch: {}
+
+    exporters:
+      loki:
+        endpoint: http://loki:3100/loki/api/v1/push
+
+    service:
+      extensions: [file_storage]
+      pipelines:
+        logs:
+          receivers: [filelog]
+          processors: [k8sattributes, attributes/loki-labels, batch]
+          exporters: [loki]
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: otel-collector
+  namespace: portfolio-advisor
+spec:
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+    spec:
+      serviceAccountName: otel-collector
+      containers:
+        - name: otel-collector
+          image: otel/opentelemetry-collector-contrib:0.112.0
+          args:
+            - "--config=/etc/otelcol/otel-collector-config.yaml"
+          env:
+            - name: K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otelcol
+            - name: file-storage
+              mountPath: /var/lib/otelcol/file_storage
+            - name: pods-logs
+              mountPath: /var/log/pods
+              readOnly: true
+            - name: containers-logs
+              mountPath: /var/log/containers
+              readOnly: true
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "50m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
+      volumes:
+        - name: config
+          configMap:
+            name: otel-collector-config
+        - name: file-storage
+          emptyDir: {}
+        - name: pods-logs
+          hostPath:
+            path: /var/log/pods
+        - name: containers-logs
+          hostPath:
+            path: /var/log/containers

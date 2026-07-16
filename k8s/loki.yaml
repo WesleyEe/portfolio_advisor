@@ -1,0 +1,126 @@
+# Loki is the log-aggregation backend — the piece this stack was missing
+# entirely before. Single-binary mode, filesystem storage, in-memory ring
+# (replication_factor: 1) — fine for one dev-cluster replica; a real
+# multi-replica deployment needs a shared object store and a real ring KV
+# store (memberlist/consul), not this config.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loki-config
+  namespace: portfolio-advisor
+data:
+  loki.yaml: |
+    auth_enabled: false
+
+    server:
+      http_listen_port: 3100
+
+    common:
+      path_prefix: /loki
+      storage:
+        filesystem:
+          chunks_directory: /loki/chunks
+          rules_directory: /loki/rules
+      replication_factor: 1
+      ring:
+        kvstore:
+          store: inmemory
+
+    schema_config:
+      configs:
+        - from: 2024-01-01
+          store: tsdb
+          object_store: filesystem
+          schema: v13
+          index:
+            prefix: index_
+            period: 24h
+
+    limits_config:
+      # Dev cluster: bound retention so filesystem storage doesn't grow
+      # unbounded. Raise this (and back storage with a PVC) for anything
+      # that needs logs to outlive a few days.
+      retention_period: 24h
+      reject_old_samples: true
+      reject_old_samples_max_age: 168h
+
+    compactor:
+      working_directory: /loki/compactor
+      retention_enabled: true
+      delete_request_store: filesystem
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loki
+  namespace: portfolio-advisor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: loki
+  template:
+    metadata:
+      labels:
+        app: loki
+    spec:
+      containers:
+        - name: loki
+          image: grafana/loki:3.1.1
+          args:
+            - "-config.file=/etc/loki/loki.yaml"
+          ports:
+            - containerPort: 3100
+          volumeMounts:
+            - name: config
+              mountPath: /etc/loki
+            - name: data
+              mountPath: /loki
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 3100
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /ready
+              port: 3100
+            initialDelaySeconds: 20
+            periodSeconds: 30
+      volumes:
+        - name: config
+          configMap:
+            name: loki-config
+        - name: data
+          # emptyDir, not a PVC: consistent with Tempo's ephemeral local
+          # storage elsewhere in this stack — chunks/index/compactor data at
+          # path_prefix (/loki) survive container restarts within the same
+          # pod but not a reschedule. Swap for a PersistentVolumeClaim (see
+          # the pattern in k8s/ollama-statefulset.yaml) if logs need to
+          # outlive a pod eviction, not just a container restart.
+          emptyDir:
+            sizeLimit: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki
+  namespace: portfolio-advisor
+spec:
+  selector:
+    app: loki
+  ports:
+    - name: http
+      port: 3100
+      targetPort: 3100
+  # ClusterIP — queried through Grafana's Loki datasource, and written to by
+  # the OTel Collector (k8s/otel-collector.yaml). No standalone UI.
+  type: ClusterIP
